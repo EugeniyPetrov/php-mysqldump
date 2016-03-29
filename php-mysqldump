@@ -1,0 +1,208 @@
+#!/usr/bin/php
+<?php
+ini_set('memory_limit', '128M');
+
+$db = array(
+    'host' => 'localhost',
+    'database' => null,
+    'user' => 'root',
+    'password' => null,
+    'charset' => 'utf8',
+);
+
+$query = '';
+$stdin = fopen('php://stdin', 'r');
+stream_set_blocking($stdin, 0);
+$first_byte = fread($stdin, 1);
+if (strlen($first_byte) != 0) {
+    $query = $first_byte;
+    while (!feof($stdin)) {
+        $query .= fread($stdin, 1024);
+    }
+}
+fclose($stdin);
+
+$options = getopt('u::h:D:C:e:f:a:s:c:iU');
+$homedir = $_SERVER['HOME'];
+$mysql_config_file = $homedir . '/.my.cnf';
+if (isset($options['c'])) {
+    $mysql_config_file = $options['c'];
+}
+
+if (file_exists($mysql_config_file)) {
+    $config_file = parse_ini_file($mysql_config_file, true);
+    if (isset($config_file['client'])) {
+        foreach ($db as $param => $value) {
+            if (isset($config_file['client'][$param])) {
+                $db[$param] = $config_file['client'][$param];
+            }
+        }
+    }
+}
+
+$format = 'csv';
+$batch_size = 100;
+$sql_batch_size = (int)(1024 * 1024 * 0.9);
+$alias = null;
+$insert_ignore = false;
+$update_on_duplicate = false;
+
+if (isset($options['h'])) {
+    $db['host'] = $options['h'];
+}
+if (isset($options['u'])) {
+    $db['user'] = $options['u'];
+}
+if (isset($options['D'])) {
+    $db['database'] = $options['D'];
+}
+if (isset($options['C'])) {
+    $db['charset'] = $options['C'];
+}
+if (isset($options['e'])) {
+    $query = $options['e'];
+}
+if (isset($options['f'])) {
+    $format = $options['f'];
+}
+if (isset($options['a'])) {
+    $alias = $options['a'];
+}
+if (isset($options['s']) && is_numeric($options['s'])) {
+    $sql_batch_size = (int)($options['s'] * 1024);
+}
+if (isset($options['i'])) {
+    $insert_ignore = true;
+}
+if (isset($options['U'])) {
+    $update_on_duplicate = true;
+}
+
+$connection = @mysql_connect($db['host'], $db['user'], $db['password']);
+if (!$connection) {
+    echo_error(mysql_error() . "\n");
+    exit;
+}
+
+if (isset($db['database'])) {
+    if (!mysql_select_db($db['database'], $connection)) {
+        echo_error(mysql_error() . "\n");
+        exit;
+    }
+}
+
+if ($db['charset']) {
+    mysql_query("SET NAMES '" . mysql_real_escape_string($db['charset'], $connection) . "'");
+}
+
+if (!$query) {
+    echo "No query specified\n";
+    exit;
+}
+$result = mysql_unbuffered_query($query, $connection);
+if (!$result) {
+    echo_error(mysql_error() . "\n");
+    exit;
+}
+
+$columns = array();
+for ($i = 0; $i < mysql_num_fields($result); $i++) {
+    $field_info = mysql_fetch_field($result, $i);
+    $columns[] = $field_info->name;
+}
+
+if ($format == 'csv') {
+    $stdout = fopen('php://stdout', 'w');
+    fputcsv($stdout, $columns);
+    while ($row = mysql_fetch_row($result)) {
+        fputcsv($stdout, $row);
+    }
+    fclose($stdout);
+} elseif ($format == 'json') {
+    while ($row = mysql_fetch_assoc($result)) {
+        echo json_encode($row) . "\n";
+    }
+} elseif ($format == 'sql') {
+    if (!isset($alias)) {
+        throw new Exception('Alias must be specified for sql format');
+    }
+
+    $fields = array();
+    $fields_num = mysql_num_fields($result);
+    for ($i = 0; $i < $fields_num; $i++) {
+        $fields[$i] = array(
+            'type' => mysql_field_type($result, $i),
+            'name' => mysql_field_name($result, $i),
+            'length' => mysql_field_len($result, $i),
+            'flags' => mysql_field_flags($result, $i),
+        );
+    }
+
+    $fields_sqll = array();
+    foreach ($fields as $field) {
+        $fields_sql[] = '`' . $field['name'] . '`';
+    }
+
+    $update_sql = '';
+    if ($update_on_duplicate) {
+        $update_sqls = array();
+        foreach ($fields as $i => $field) {
+            $update_sqls[] = '`' . $field['name'] . '` = VALUES (`' . $field['name'] . '`)';
+        }
+        $update_sql = "\nON DUPLICATE KEY UPDATE\n" . join(",\n", $update_sqls);
+    }
+
+    $current_batch = null;
+    $insert_statement = "INSERT " . ($insert_ignore ? "IGNORE " : "") . "INTO `" . $alias . "` (" . join(', ', $fields_sql) . ") VALUES\n";
+    while ($row = mysql_fetch_row($result)) {
+        if (!isset($current_batch)) {
+            $current_batch = $insert_statement;
+        } else {
+            $current_batch .= ",\n";
+        }
+        $current_batch .= '(';
+        foreach ($row as $field_id => $value) {
+            $last = ($field_id == $fields_num - 1);
+            $type = $fields[$field_id]['type'];
+            switch ($type) {
+                case 'int':
+                case 'real':
+                case 'null':
+                    $current_batch .= ($value !== null) ? $value : 'NULL';
+                    break;
+                case 'string':
+                case 'blob':
+                    $current_batch .= ($value !== null) ? "'" . mysql_real_escape_string($value, $connection) . "'" : 'NULL';
+                    break;
+                case 'datetime':
+                case 'date':
+                case 'time':
+                case 'timestamp':
+                    $current_batch .= ($value !== null) ? "'" . $value . "'" : 'NULL';
+                    break;
+                default:
+                    throw new Exception(sprintf('Invalid type %s', $type));
+            }
+            if (!$last) {
+                $current_batch .= ', ';
+            }
+        }
+        $current_batch .= ')';
+        if (strlen($current_batch) > $sql_batch_size) {
+            $current_batch .= $update_sql . ";\n";
+            echo $current_batch;
+            $current_batch = null;
+        }
+    }
+    if ($current_batch) {
+        echo $current_batch . $update_sql . ";\n";
+    }
+}
+
+mysql_close($connection);
+
+function echo_error($str) {
+    $f = fopen('php://stderr', 'w');
+    fwrite($f, $str);
+    fclose($f);
+}

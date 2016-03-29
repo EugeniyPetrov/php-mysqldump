@@ -1,0 +1,123 @@
+.TH php-mysqldump 3 "2012-07-07" "version 1.0"
+.SH NAME
+php-mysqldump - php-depended util for dumping sql into csv etc.
+.SH SYNOPSIS
+.B php-mysqldump
+-h <mysql-host> [-u <mysql-user>] -D <mysql-database> [-C <mysql-charset>]
+              [-e <mysql-query>] [-f csv|sql[ -a <mysql-table-alias>]] [-i] [-U]
+.SH DESCRIPTION
+php-mysqldump is helpful REL-util for some routine mysql-queries. The output result is formatted to scv (by default). It is possible to output the result as sql-query.
+
+.SH MYSQL-OPTIONS
+-h <mysql-host>
+    <mysql-host> could be specified as short-alias of mysql-host related to the REL-server. It is recommended to use server mirrors for reading queries.
+
+-u <mysql-user>
+    By default this option is specified by
+.B ~/.my.cnf
+file.
+
+-D <mysql-database>
+    Database to work on.
+
+-C <mysql-charset>
+    It is set to
+.B utf-8
+by default.
+.SH DUMP-OPTIONS
+-e <mysql-query>
+    The query to be processed. If not specified it will be given from standart input. It is recommended to use the command with outer sql-file.
+
+-f
+    Query output format. Possible values:
+.B csv
+(by default),
+.B sql.
+With the last you must to specify alias by the
+.B -a
+key surely.
+
+-a <mysql-table-alias>
+    MySQL table alias the result of a query will by written in. It is so pointless with the
+.B -f csv
+
+-i
+    Produce
+.B INSERT IGNORE
+output for sql dump.
+
+-U
+    Produce statement for update duplicate rows.
+option value.
+.SH EXAMPLES
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -e 'SELECT * FROM profiles_coords LIMIT 10'
+    The result will be put to the standart output in csv-format. You can redirect it to file like:
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -e 'SELECT * FROM profiles_coords LIMIT 10' > result.csv
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com < all_orders.sql | pv | gzip > orders.csv.gz
+    The query will be given from
+.I all_orders.sql
+file and the result will be redirected to the
+.I orders.csv.gz
+This example use
+.B pv
+for stream control and
+.B gzip
+for compressed result.
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -e "SELECT * FROM profiles_coords LIMIT 3"
+    Produce CSV result.
+
+    profile_id,latitude,longitude,updated
+    61833,7.433251,3.901608,"0000-00-00 00:00:00"
+    83494,53.000000,-2.183330,"0000-00-00 00:00:00"
+    83508,51.500000,-0.116667,"0000-00-00 00:00:00"
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -f sql -a temporary_data -e 'SELECT * FROM profiles_coord limit 3'
+    This will display result as insert query:
+
+    INSERT INTO `temporary_data` VALUES
+    (60001, 32.771519, -92.332619, '0000-00-00 00:00:00'),
+    (60003, 39.011662, -75.572357, '0000-00-00 00:00:00'),
+    (60018, 41.736481, -11.673798, '0000-00-00 00:00:00');
+
+    So you can redirect it to mysql back.
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -f sql -a temporary_data -e 'SELECT * FROM profiles_coord limit 3' | mysql -h mysql3 -D multi_logs
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -f sql -a profiles_coords_backup -i -e "SELECT * FROM profiles_coords LIMIT 3"
+    Produce
+.B INSERT IGNORE
+statement.
+
+    INSERT IGNORE INTO `profiles_coords_backup` (`profile_id`, `latitude`, `longitude`, `updated`) VALUES
+    (61833, 7.433251, 3.901608, '0000-00-00 00:00:00'),
+    (83494, 53.000000, -2.183330, '0000-00-00 00:00:00'),
+    (83508, 51.500000, -0.116667, '0000-00-00 00:00:00');
+
+.B php-mysqldump
+-h mysql1-mirror2 -D sexintheuk_com -f sql -a profiles_coords_backup -U -e "SELECT * FROM profiles_coords LIMIT 3"
+    Produce
+.B ON DUPLICATE KEY UPDATE
+statement.
+
+    INSERT INTO `profiles_coords_backup` (`profile_id`, `latitude`, `longitude`, `updated`) VALUES
+    (61833, 7.433251, 3.901608, '0000-00-00 00:00:00'),
+    (83494, 53.000000, -2.183330, '0000-00-00 00:00:00'),
+    (83508, 51.500000, -0.116667, '0000-00-00 00:00:00')
+    ON DUPLICATE KEY UPDATE
+    `profile_id` = VALUES (`profile_id`),
+    `latitude` = VALUES (`latitude`),
+    `longitude` = VALUES (`longitude`),
+    `updated` = VALUES (`updated`);
+
+.SH AUTHORS
+It was written by E. Petrov <eug.a.petrov@gmail.com>.
