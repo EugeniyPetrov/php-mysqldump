@@ -132,7 +132,6 @@ if ($format == 'csv') {
     $fields_num = $result->columnCount();
     for ($i = 0; $i < $fields_num; $i++) {
         $meta = $result->getColumnMeta($i);
-        print_r($meta);
         $fields[$i] = array(
             'type' => $meta["native_type"],
             'pdo_type' => $meta["pdo_type"],
@@ -178,6 +177,7 @@ if ($format == 'csv') {
                     $current_batch .= ($value !== null) ? $connection->quote($value) : 'NULL';
                     break;
                 case "BLOB":
+                case "GEOMETRY":
                     $current_batch .= ($value !== null) ? "0x" . (unpack("H*", $value)[1]) : 'NULL';
                     break;
                 case "BIT":
