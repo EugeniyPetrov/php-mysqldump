@@ -3,7 +3,7 @@
 ini_set('memory_limit', '128M');
 
 $db = array(
-    'host' => 'localhost',
+    'host' => '127.0.0.1',
     'database' => null,
     'user' => 'root',
     'password' => null,
@@ -78,48 +78,49 @@ if (isset($options['U'])) {
     $update_on_duplicate = true;
 }
 
-$connection = @mysql_connect($db['host'], $db['user'], $db['password']);
-if (!$connection) {
-    echo_error(mysql_error() . "\n");
+if (isset($db['charset'])) {
+    $charset = ";charset=" . $db['charset'];
+}
+
+try {
+    $dsn = 'mysql:host=' . $db['host'] . ';dbname=' . $db['database'] . $charset;
+    $connection = new \PDO($dsn, $db['user'], $db['password'], [
+        \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
+        \PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION,
+    ]);
+} catch (\Exception $e) {
+    echo_error($e->getMessage() . "\n");
     exit;
-}
-
-if (isset($db['database'])) {
-    if (!mysql_select_db($db['database'], $connection)) {
-        echo_error(mysql_error() . "\n");
-        exit;
-    }
-}
-
-if ($db['charset']) {
-    mysql_query("SET NAMES '" . mysql_real_escape_string($db['charset'], $connection) . "'");
 }
 
 if (!$query) {
     echo "No query specified\n";
     exit;
 }
-$result = mysql_unbuffered_query($query, $connection);
-if (!$result) {
-    echo_error(mysql_error() . "\n");
+
+$connection->setAttribute(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+try {
+    $result = $connection->query($query);
+} catch (\Exception $e) {
+    echo_error($e->getMessage() . "\n");
     exit;
 }
 
 $columns = array();
-for ($i = 0; $i < mysql_num_fields($result); $i++) {
-    $field_info = mysql_fetch_field($result, $i);
-    $columns[] = $field_info->name;
+for ($i = 0; $i < $result->columnCount(); $i++) {
+    $field_info = $result->getColumnMeta($i);
+    $columns[] = $field_info["name"];
 }
 
 if ($format == 'csv') {
     $stdout = fopen('php://stdout', 'w');
     fputcsv($stdout, $columns);
-    while ($row = mysql_fetch_row($result)) {
+    while ($row = $result->fetch()) {
         fputcsv($stdout, $row);
     }
     fclose($stdout);
 } elseif ($format == 'json') {
-    while ($row = mysql_fetch_assoc($result)) {
+    while ($row = $result->fetch()) {
         echo json_encode($row) . "\n";
     }
 } elseif ($format == 'sql') {
@@ -128,13 +129,14 @@ if ($format == 'csv') {
     }
 
     $fields = array();
-    $fields_num = mysql_num_fields($result);
+    $fields_num = $result->columnCount();
     for ($i = 0; $i < $fields_num; $i++) {
+        $meta = $result->getColumnMeta($i);
+        print_r($meta);
         $fields[$i] = array(
-            'type' => mysql_field_type($result, $i),
-            'name' => mysql_field_name($result, $i),
-            'length' => mysql_field_len($result, $i),
-            'flags' => mysql_field_flags($result, $i),
+            'type' => $meta["native_type"],
+            'pdo_type' => $meta["pdo_type"],
+            'name' => $meta["name"],
         );
     }
 
@@ -154,7 +156,7 @@ if ($format == 'csv') {
 
     $current_batch = null;
     $insert_statement = "INSERT " . ($insert_ignore ? "IGNORE " : "") . "INTO `" . $alias . "` (" . join(', ', $fields_sql) . ") VALUES\n";
-    while ($row = mysql_fetch_row($result)) {
+    while ($row = $result->fetch(\PDO::FETCH_NUM)) {
         if (!isset($current_batch)) {
             $current_batch = $insert_statement;
         } else {
@@ -164,21 +166,31 @@ if ($format == 'csv') {
         foreach ($row as $field_id => $value) {
             $last = ($field_id == $fields_num - 1);
             $type = $fields[$field_id]['type'];
+            $pdo_type = $fields[$field_id]['pdo_type'];
             switch ($type) {
-                case 'int':
-                case 'real':
-                case 'null':
+                case "LONG":
+                case "LONGLONG":
+                case "NULL":
+                case "NEWDECIMAL";
                     $current_batch .= ($value !== null) ? $value : 'NULL';
                     break;
-                case 'string':
-                case 'blob':
-                    $current_batch .= ($value !== null) ? "'" . mysql_real_escape_string($value, $connection) . "'" : 'NULL';
+                case "VAR_STRING":
+                    $current_batch .= ($value !== null) ? $connection->quote($value) : 'NULL';
                     break;
-                case 'datetime':
-                case 'date':
-                case 'time':
-                case 'timestamp':
-                    $current_batch .= ($value !== null) ? "'" . $value . "'" : 'NULL';
+                case "BLOB":
+                    $current_batch .= ($value !== null) ? "0x" . (unpack("H*", $value)[1]) : 'NULL';
+                    break;
+                case "BIT":
+                    $current_batch .= ($value !== null) ? "b'" . decbin($value) . "'" : 'NULL';
+                    break;
+                case null:
+                    switch ($pdo_type) {
+                        case \PDO::PARAM_STR:
+                            $current_batch .= ($value !== null) ? $connection->quote($value) : 'NULL';
+                            break;
+                        default:
+                            throw new Exception(sprintf('Invalid type %s', $pdo_type));
+                    }
                     break;
                 default:
                     throw new Exception(sprintf('Invalid type %s', $type));
@@ -199,9 +211,8 @@ if ($format == 'csv') {
     }
 }
 
-mysql_close($connection);
-
-function echo_error($str) {
+function echo_error($str)
+{
     $f = fopen('php://stderr', 'w');
     fwrite($f, $str);
     fclose($f);
