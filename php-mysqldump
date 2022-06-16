@@ -167,6 +167,7 @@ if ($format == 'csv') {
             $type = $fields[$field_id]['type'];
             $pdo_type = $fields[$field_id]['pdo_type'];
             switch ($type) {
+                case "SHORT":
                 case "LONG":
                 case "LONGLONG":
                 case "NULL":
