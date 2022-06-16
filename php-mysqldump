@@ -175,6 +175,7 @@ if ($format == 'csv') {
                     $current_batch .= ($value !== null) ? $value : 'NULL';
                     break;
                 case "VAR_STRING":
+                case "DATETIME":
                     $current_batch .= ($value !== null) ? $connection->quote($value) : 'NULL';
                     break;
                 case "BLOB":
